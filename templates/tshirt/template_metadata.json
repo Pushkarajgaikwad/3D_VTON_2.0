@@ -1,0 +1,12 @@
+{
+  "category": "tshirt",
+  "verts_count": 20,
+  "faces_count": 18,
+  "canonical_pose": "flat",
+  "canonical_aspect_ratio": 0.6,
+  "canonical_area_ratio": 0.75,
+  "scale": 1.0,
+  "description": "Simple flat t-shirt template with sleeves",
+  "tags": ["upper", "shirt", "tshirt"],
+  "created": "2025-12-12"
+}

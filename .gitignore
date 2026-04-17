@@ -1,0 +1,20 @@
+﻿# Heavy Deep Learning Models & Checkpoints
+*.pth
+*.pt
+*.pkl
+
+# 3D Meshes & Output Data
+*.npz
+*.obj
+*.glb
+output/
+
+# Logs, Databases, and Caches
+*.log
+dump.rdb
+__pycache__/
+*.pyc
+
+# Archives
+*.tar.gz
+*.zip

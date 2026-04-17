@@ -1,0 +1,12 @@
+{
+  "category": "pants",
+  "verts_count": 32,
+  "faces_count": 24,
+  "canonical_pose": "flat",
+  "canonical_aspect_ratio": 1.8,
+  "canonical_area_ratio": 0.7,
+  "scale": 1.0,
+  "description": "Simple flat pants template with two legs",
+  "tags": ["lower", "pants", "bottoms"],
+  "created": "2025-12-12"
+}

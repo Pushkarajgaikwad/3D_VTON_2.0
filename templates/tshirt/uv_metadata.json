@@ -1,0 +1,14 @@
+{
+  "resolution": 1024,
+  "method": "xz_projection",
+  "created_by": "TextureManager.auto_generate_uv",
+  "created_date": "2025-12-12",
+  "notes": "XZ projection UV mapping for T-shirt template. Simple horizontal/vertical projection from front-facing orientation.",
+  "parameters": {
+    "projection_axis": "xz",
+    "normalization": "minmax",
+    "seam_handling": "none"
+  },
+  "quality": "fast",
+  "recommended_texture_size": "1024x1024"
+}

@@ -1,0 +1,22 @@
+import torch
+import os
+from utils.garment_processor import GarmentProcessor # Fallback
+
+class U2NetHandler:
+    def __init__(self, device="cuda"):
+        self.device = device
+        self.checkpoint = "checkpoints/u2net.pth"
+        self.model = None
+        self.fallback = GarmentProcessor()
+        
+        if os.path.exists(self.checkpoint):
+            print(f"INFO: U2Net weights found at {self.checkpoint}")
+            # Logic to load U2Net would go here
+        else:
+            print("WARNING: U2Net weights missing. Using GrabCut fallback.")
+
+    def segment(self, image):
+        if self.model:
+            # Run AI segmentation
+            pass 
+        return self.fallback.process(image) # Fallback to traditional CV
