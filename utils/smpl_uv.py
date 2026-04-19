@@ -94,10 +94,10 @@ def _load_mesh_data():
 
 # Compatibility stubs
 def get_smpl_part_map() -> np.ndarray:
-    return np.zeros(6890, dtype=np.int32)
+    raise RuntimeError("get_smpl_part_map is deprecated. xatlas uses dynamic continuous unwrapping without semantic parts.")
 
 def get_torso_uv_bounds() -> tuple[float, float, float, float]:
-    return 0.0, 1.0, 0.0, 1.0
+    raise RuntimeError("get_torso_uv_bounds is deprecated. xatlas uses dynamic continuous unwrapping without semantic parts.")
 
 def get_head_uv_bounds() -> tuple[float, float, float, float]:
-    return 0.0, 1.0, 0.0, 1.0
+    raise RuntimeError("get_head_uv_bounds is deprecated. xatlas uses dynamic continuous unwrapping without semantic parts.")
