@@ -5,8 +5,8 @@ python-multipart    # For handling file uploads (images)
 redis               # In-memory data store for job queue/status
 
 # --- Core ML/AI ---
-torch               # PyTorch: Main deep learning framework
-torchvision         # Datasets, transforms, and models for computer vision
+#torch               # PyTorch: Main deep learning framework
+#torchvision         # Datasets, transforms, and models for computer vision
 
 # --- 3D & Body Modeling ---
 smplx[all]          # For loading and manipulating SMPL models (includes smplh, manol, flamel)

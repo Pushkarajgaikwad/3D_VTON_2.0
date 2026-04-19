@@ -1,34 +1,5 @@
-import patch_env
-import numpy
-numpy.float = float
-numpy.int = int
-numpy.bool = bool
-numpy.object = object
-numpy.str = str
-import numpy
-numpy.float = float
-numpy.int = int
-numpy.bool = bool
-numpy.complex = complex
-numpy.object = object
-numpy.str = str
+import patch_env  # Injects all legacy numpy attributes (float, int, bool, etc.)
 import numpy as np
-for attr in ["float", "int", "bool", "complex", "object", "str"]:
-    if not hasattr(np, attr): setattr(np, attr, getattr(__builtins__, attr) if attr != "complex" else complex)
-import numpy
-numpy.float = float
-numpy.int = int
-numpy.bool = bool
-numpy.complex = complex
-numpy.object = object
-numpy.str = str
-import numpy
-numpy.float = float
-numpy.int = int
-numpy.bool = bool
-numpy.complex = complex
-numpy.object = object
-numpy.str = str
 """
 Virtual Try-On 3D Backend API (Part 4: Full Integration)
 
@@ -245,20 +216,6 @@ async def lifespan(app: FastAPI):
             logger.info("✓ GarmentClassifier ready")
     except Exception as e:
         logger.warning(f"⚠ GarmentClassifier loading skipped: {e}")
-        app.state.garment_classifier = None
-        
-        # Try to load checkpoint
-        if os.path.exists(GARMENT_CLASSIFIER_PATH):
-            logger.info(f"Loading classifier checkpoint from {GARMENT_CLASSIFIER_PATH}...")
-            checkpoint = torch.load(GARMENT_CLASSIFIER_PATH, map_location=DEVICE)
-            garment_classifier.load_state_dict(checkpoint, strict=False)
-            logger.info("✓ GarmentClassifier loaded with checkpoint")
-        else:
-            logger.warning(f"✓ GarmentClassifier initialized (no checkpoint found at {GARMENT_CLASSIFIER_PATH})")
-        
-        app.state.garment_classifier = garment_classifier
-    except Exception as e:
-        logger.warning(f"✗ Failed to initialize GarmentClassifier (fallback to heuristic): {e}")
         app.state.garment_classifier = None
     
     try:
