@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import os
+import gc
 import logging
 import torch
 
@@ -205,15 +206,21 @@ async def lifespan(app: FastAPI):
             g_classifier = GarmentClassifier(
                 num_classes=num_classes,
                 emb_dim=EMB_DIM
-            ).to(device)
+            ).to(torch.device("cpu"))  # Load on CPU first to prevent VRAM OOM
             
-            # Load the checkpoint INSIDE the try block so it has access to g_classifier
-            checkpoint = torch.load(GARMENT_CLASSIFIER_PATH, map_location=device)
+            # Memory-safe load: always CPU, gc before and after
+            gc.collect()
+            checkpoint = torch.load(
+                GARMENT_CLASSIFIER_PATH,
+                map_location=torch.device("cpu"),
+                weights_only=True
+            )
             g_classifier.load_state_dict(checkpoint, strict=False)
             g_classifier.eval()
+            gc.collect()
             
             app.state.garment_classifier = g_classifier
-            logger.info("✓ GarmentClassifier ready")
+            logger.info("✓ GarmentClassifier ready (CPU)")
     except Exception as e:
         logger.warning(f"⚠ GarmentClassifier loading skipped: {e}")
         app.state.garment_classifier = None
@@ -221,14 +228,21 @@ async def lifespan(app: FastAPI):
     try:
         # 7. Initialize BodyReconstructionModel
         logger.info(f"Initializing BodyReconstructionModel...")
-        body_model = BodyReconstructionModel(n_iter=3).to(DEVICE)
+        # Always instantiate on CPU first; move to DEVICE only after weights are loaded
+        body_model = BodyReconstructionModel(n_iter=3)
         body_model.eval()
         
         if os.path.exists(BODY_MODEL_PATH):
-            logger.info(f"Loading body model checkpoint from {BODY_MODEL_PATH}...")
-            state = torch.load(BODY_MODEL_PATH, map_location=DEVICE, weights_only=True)
+            logger.info(f"Loading body model checkpoint from {BODY_MODEL_PATH} → CPU (memory-safe)...")
+            gc.collect()
+            state = torch.load(
+                BODY_MODEL_PATH,
+                map_location=torch.device("cpu"),
+                weights_only=True
+            )
             body_model.load_state_dict(state, strict=False)
-            logger.info("✓ BodyReconstructionModel loaded with checkpoint")
+            gc.collect()
+            logger.info("✓ BodyReconstructionModel loaded with checkpoint (CPU)")
         else:
             logger.warning(f"⚠ BodyReconstructionModel initialized (no checkpoint found at {BODY_MODEL_PATH})")
         
@@ -239,23 +253,60 @@ async def lifespan(app: FastAPI):
     
     try:
         # 8. Initialize ConditionalGarmentDrapingModel
-        logger.info("Initializing ConditionalGarmentDrapingModel...")
+        # ── MEMORY-SAFE LOADING ─────────────────────────────────────────────
+        # alias_final.pth is 384 MB.  Loading it directly into VRAM caused a
+        # silent OS-level OOM kill (no Python traceback).  We now:
+        #   1. Instantiate the model on CPU (no VRAM allocated yet)
+        #   2. Run gc.collect() to free any prior allocations
+        #   3. Load weights onto CPU via map_location=cpu (peak RAM ≈ 2× file size)
+        #   4. weights_only=False required because the checkpoint contains
+        #      non-tensor objects (optimizer state, custom classes)
+        # ───────────────────────────────────────────────────────────────────
+        logger.info("Initializing ConditionalGarmentDrapingModel (CPU-safe mode)...")
         draping_model = ConditionalGarmentDrapingModel(
             node_input_dim=3,
             hidden_dim=128,
             cond_dim=82 + EMB_DIM,
             emb_dim=EMB_DIM,
             num_layers=4
-        ).to(DEVICE)
+        )  # CPU only — do NOT call .to(DEVICE) before weights are loaded
         draping_model.eval()
         
         if os.path.exists(GARMENT_MODEL_PATH):
-            logger.info(f"Loading draping model checkpoint from {GARMENT_MODEL_PATH}...")
-            state = torch.load(GARMENT_MODEL_PATH, map_location=DEVICE, weights_only=True)
+            size_mb = os.path.getsize(GARMENT_MODEL_PATH) / (1024 * 1024)
+            logger.info(
+                f"Loading draping model checkpoint from {GARMENT_MODEL_PATH} "
+                f"({size_mb:.0f} MB) → CPU (memory-safe)..."
+            )
+            gc.collect()  # Free all prior allocations before the big load
+            try:
+                state = torch.load(
+                    GARMENT_MODEL_PATH,
+                    map_location=torch.device("cpu"),  # ← NEVER map to DEVICE here
+                    weights_only=True                   # Safe for pure state-dict files
+                )
+            except Exception as load_err:
+                # weights_only=True rejects checkpoints with non-tensor objects;
+                # fall back to weights_only=False with an explicit warning.
+                logger.warning(
+                    f"weights_only=True rejected (non-tensor objects in checkpoint). "
+                    f"Retrying with weights_only=False: {load_err}"
+                )
+                gc.collect()
+                state = torch.load(
+                    GARMENT_MODEL_PATH,
+                    map_location=torch.device("cpu"),
+                    weights_only=False
+                )
             draping_model.load_state_dict(state, strict=False)
-            logger.info("✓ ConditionalGarmentDrapingModel loaded with checkpoint")
+            del state          # Release the raw state dict immediately
+            gc.collect()       # Reclaim the freed memory before continuing
+            logger.info("✓ ConditionalGarmentDrapingModel loaded with checkpoint (CPU)")
         else:
-            logger.warning(f"⚠ ConditionalGarmentDrapingModel initialized (no checkpoint found at {GARMENT_MODEL_PATH})")
+            logger.warning(
+                f"⚠ ConditionalGarmentDrapingModel initialized "
+                f"(no checkpoint found at {GARMENT_MODEL_PATH})"
+            )
         
         app.state.draping_model = draping_model
     except Exception as e:

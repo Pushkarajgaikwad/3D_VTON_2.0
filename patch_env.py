@@ -121,4 +121,4 @@ def _ch_setstate(self, state):
 # Inject onto the Ch class so it's active before any pickle.load() call
 chumpy.Ch.__setstate__ = _ch_setstate
 
-print("✓ Environment Patch: Legacy attrs + copyreg interceptor + Ch.__setstate__ active.")
+print("[OK] Environment Patch: Legacy attrs + copyreg interceptor + Ch.__setstate__ active.")

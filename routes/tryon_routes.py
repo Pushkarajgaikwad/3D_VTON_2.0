@@ -124,41 +124,50 @@ def _inference_pipeline(
 
     try:
         # --- 0. Setup Handlers ---
-        openpose = app.state.openpose
-        pifuhd   = app.state.pifuhd
-        u2net    = app.state.u2net
-        warper   = app.state.texture_warp_engine
+        openpose  = app.state.openpose
+        pifuhd    = app.state.pifuhd
+        u2net     = app.state.u2net
+        warper    = app.state.texture_warp_engine
         projector = app.state.texture_projector
+        tex_mgr   = getattr(app.state, 'texture_manager', None)
 
         # --- 1. Body Pose Detection (OpenPose) ---
-        logger.info(f"[{job_id}] Stage 1: Detecting 18-keypoint pose logic...")
-        # Uses openpose_body.pth (200MB)
+        logger.info(f"[{job_id}] Stage 1: Detecting 18-keypoint pose...")
         keypoints = openpose.detect(front_bytes)
 
         # --- 2. 3D Body Reconstruction (PIFuHD) ---
-        logger.info(f"[{job_id}] Stage 2: Reconstructing high-res 3D geometry...")
-        # Uses pifuhd_final.pt (1.5GB) or falls back to SMPL 6890 verts
+        logger.info(f"[{job_id}] Stage 2: Reconstructing 3D geometry...")
         body_mesh = pifuhd.reconstruct(front_bytes, keypoints)
 
-        # --- 3. Garment Segmentation (U2Net) ---
+        # --- 3. Garment Segmentation + Texture Processing ---
         logger.info(f"[{job_id}] Stage 3: Segmenting garment via U2Net...")
-        # Uses u2net.pth (132MB)
-        garment_mask = u2net.segment(garment_bytes)
+        # u2net.segment returns an RGBA numpy array from prepare_garment_texture
+        garment_mask_rgba = u2net.segment(garment_bytes)
 
-        # --- 4. Neural Texture Warping (VITON GMM) ---
-        logger.info(f"[{job_id}] Stage 4: Executing TPS warping...")
-        # Uses gmm.pth (73MB)
+        # Run the texture through TextureManager for BG removal + normalisation
+        # If texture_manager is unavailable, fall back to raw garment bytes
+        if tex_mgr is not None:
+            logger.info(f"[{job_id}] Stage 3b: TextureManager BG removal + resize...")
+            garment_texture = tex_mgr.map_texture(body_mesh, garment_bytes)
+        else:
+            logger.warning(f"[{job_id}] TextureManager unavailable — using raw garment bytes")
+            garment_texture = garment_bytes
+
+        # --- 4. Neural Texture Warping (VITON GMM / affine fallback) ---
+        logger.info(f"[{job_id}] Stage 4: Executing TPS / affine warping...")
         person_repr = warper.build_person_repr(body_mesh, keypoints)
-        warped_texture = warper.warp(garment_bytes, person_repr)
+        warped_texture = warper.warp(garment_texture, person_repr)
+        # At this point warped_texture is an RGBA numpy array (or raw bytes fallback)
 
-        # --- 5. GLB Export ---
-        logger.info(f"[{job_id}] Stage 5: Finalizing GLB export...")
+        # --- 5. GLB Export with Baked Texture Atlas ---
+        logger.info(f"[{job_id}] Stage 5: Baking atlas + exporting GLB...")
         output_path = f"output/{job_id}.glb"
         os.makedirs("output", exist_ok=True)
-        
-        # This calls your texture_projector.py to bundle everything
+
         final_glb_path = projector.project_and_export(
-            body_mesh, warped_texture, output_path
+            body_mesh,
+            warped_texture,  # RGBA numpy array (or bytes — projector handles both)
+            output_path,
         )
 
         logger.info(f"[{job_id}] Pipeline Complete. Saved to: {final_glb_path}")
