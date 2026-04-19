@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 import os
 import gc
 import logging
+import traceback
 import torch
 
 from utils.job_queue import JobQueue
@@ -164,13 +165,27 @@ async def lifespan(app: FastAPI):
     try:
         from utils.texture_manager import TextureManager
         from utils.smpl_handler import SMPLHandler
-        
+
         logger.info("Initializing Basic Infrastructure...")
-        app.state.texture_manager = TextureManager(templates_root=TEMPLATES_ROOT, uv_res=TEXTURE_RESOLUTION)
-        app.state.smpl_handler = SMPLHandler(model_path=SMPL_MODEL_PATH, device=device)
-        logger.info("✓ Basic Infrastructure (Texture/SMPL) Ready")
+
+        # TextureManager — no heavy weights, just resolution config
+        app.state.texture_manager = TextureManager(
+            templates_root=TEMPLATES_ROOT, uv_res=TEXTURE_RESOLUTION
+        )
+        logger.info("[OK] TextureManager initialised")
+
+        # SMPLHandler — loads SMPL_NEUTRAL.pkl (CPU only)
+        app.state.smpl_handler = SMPLHandler(
+            model_path=SMPL_MODEL_PATH, device="cpu"
+        )
+        logger.info("[OK] SMPLHandler initialised (CPU)")
+
+        logger.info("[OK] Basic Infrastructure (Texture/SMPL) Ready")
     except Exception as e:
-        logger.error(f"✗ Failed to initialize basic infra: {e}")
+        logger.error(
+            f"[FAIL] Failed to initialize basic infra: {e}\n"
+            + traceback.format_exc()
+        )
 
     # --- 3. Initialize High-Fidelity Pipeline (Heavy Models) ---
     try:
@@ -191,38 +206,67 @@ async def lifespan(app: FastAPI):
         
         logger.info("✓ All High-Fidelity Handlers initialized successfully.")
     except Exception as e:
-        logger.error(f"✗ Critical error during handler initialization: {e}")
+        logger.error(
+            f"[FAIL] Critical error during handler initialization: {e}\n"
+            + traceback.format_exc()
+        )
 
     # --- 4. Initialize GarmentClassifier ---
+    # ── MEMORY-SAFE LOADING ──────────────────────────────────────────────────
+    # garment_classifier.pth can be large (100-400 MB).  We use the same
+    # two-phase load strategy as draping model: CPU-only, weights_only=True
+    # first, graceful fallback to weights_only=False if checkpoint has extras.
+    # ─────────────────────────────────────────────────────────────────────────
     try:
         if os.path.exists(GARMENT_CLASSIFIER_PATH):
             from models.garment_classifier import GarmentClassifier
-            logger.info(f"Loading GarmentClassifier from {GARMENT_CLASSIFIER_PATH}...")
-            
-            # Safer way to count templates: check the folder directly
-            num_classes = len(os.listdir(TEMPLATES_ROOT)) if os.path.exists(TEMPLATES_ROOT) else 2
-            
-            # Create the classifier instance
-            g_classifier = GarmentClassifier(
-                num_classes=num_classes,
-                emb_dim=EMB_DIM
-            ).to(torch.device("cpu"))  # Load on CPU first to prevent VRAM OOM
-            
-            # Memory-safe load: always CPU, gc before and after
-            gc.collect()
-            checkpoint = torch.load(
-                GARMENT_CLASSIFIER_PATH,
-                map_location=torch.device("cpu"),
-                weights_only=True
+            size_mb = os.path.getsize(GARMENT_CLASSIFIER_PATH) / (1024 * 1024)
+            logger.info(
+                f"Loading GarmentClassifier from {GARMENT_CLASSIFIER_PATH} "
+                f"({size_mb:.0f} MB) -> CPU (memory-safe)..."
             )
-            g_classifier.load_state_dict(checkpoint, strict=False)
-            g_classifier.eval()
+
+            num_classes = len(os.listdir(TEMPLATES_ROOT)) if os.path.exists(TEMPLATES_ROOT) else 2
+
+            # Instantiate on CPU — no VRAM allocated yet
+            g_classifier = GarmentClassifier(num_classes=num_classes, emb_dim=EMB_DIM)
+
+            gc.collect()  # Release prior allocations before the big load
+            try:
+                ckpt = torch.load(
+                    GARMENT_CLASSIFIER_PATH,
+                    map_location=torch.device("cpu"),
+                    weights_only=True,
+                )
+            except Exception as _e:
+                logger.warning(
+                    f"weights_only=True rejected for GarmentClassifier "
+                    f"(non-tensor objects). Retrying with weights_only=False: {_e}"
+                )
+                gc.collect()
+                ckpt = torch.load(
+                    GARMENT_CLASSIFIER_PATH,
+                    map_location=torch.device("cpu"),
+                    weights_only=False,
+                )
+
+            g_classifier.load_state_dict(ckpt, strict=False)
+            del ckpt        # Free raw state dict immediately
             gc.collect()
-            
+            g_classifier.eval()
+
             app.state.garment_classifier = g_classifier
-            logger.info("✓ GarmentClassifier ready (CPU)")
+            logger.info("[OK] GarmentClassifier ready (CPU)")
+        else:
+            logger.warning(
+                f"[SKIP] GarmentClassifier: no checkpoint at {GARMENT_CLASSIFIER_PATH}"
+            )
+            app.state.garment_classifier = None
     except Exception as e:
-        logger.warning(f"⚠ GarmentClassifier loading skipped: {e}")
+        logger.warning(
+            f"[WARN] GarmentClassifier loading skipped: {e}\n"
+            + traceback.format_exc()
+        )
         app.state.garment_classifier = None
     
     try:
@@ -248,7 +292,10 @@ async def lifespan(app: FastAPI):
         
         app.state.body_model = body_model
     except Exception as e:
-        logger.error(f"✗ Failed to initialize BodyReconstructionModel: {e}")
+        logger.error(
+            f"[FAIL] Failed to initialize BodyReconstructionModel: {e}\n"
+            + traceback.format_exc()
+        )
         app.state.body_model = None
     
     try:
@@ -310,7 +357,10 @@ async def lifespan(app: FastAPI):
         
         app.state.draping_model = draping_model
     except Exception as e:
-        logger.error(f"✗ Failed to initialize ConditionalGarmentDrapingModel: {e}")
+        logger.error(
+            f"[FAIL] Failed to initialize ConditionalGarmentDrapingModel: {e}\n"
+            + traceback.format_exc()
+        )
         app.state.draping_model = None
     
     try:
@@ -325,13 +375,17 @@ async def lifespan(app: FastAPI):
     
     try:
         # 10. Initialize IdentityEncoder (NEW)
+        # Instantiate on CPU — avoid VRAM allocation at startup
         logger.info("Initializing IdentityEncoder for face embeddings...")
-        identity_encoder = IdentityEncoder(embedding_dim=512).to(DEVICE)
+        identity_encoder = IdentityEncoder(embedding_dim=512)  # CPU only at init
         identity_encoder.eval()
         app.state.identity_encoder = identity_encoder
-        logger.info("✓ IdentityEncoder initialized (ResNet-18 512-D embeddings)")
+        logger.info("[OK] IdentityEncoder initialized (ResNet-18 512-D, CPU)")
     except Exception as e:
-        logger.warning(f"⚠ Failed to initialize IdentityEncoder: {e}")
+        logger.warning(
+            f"[WARN] Failed to initialize IdentityEncoder: {e}\n"
+            + traceback.format_exc()
+        )
         app.state.identity_encoder = None
     
     try:
@@ -339,9 +393,12 @@ async def lifespan(app: FastAPI):
         logger.info("Initializing FaceBlender for seamless face blending...")
         face_blender = FaceBlender(pyramid_levels=4)
         app.state.face_blender = face_blender
-        logger.info("✓ FaceBlender initialized (Laplacian Pyramid blending)")
+        logger.info("[OK] FaceBlender initialized (Laplacian Pyramid blending)")
     except Exception as e:
-        logger.warning(f"⚠ Failed to initialize FaceBlender: {e}")
+        logger.warning(
+            f"[WARN] Failed to initialize FaceBlender: {e}\n"
+            + traceback.format_exc()
+        )
         app.state.face_blender = None
     
     # Create output directory
